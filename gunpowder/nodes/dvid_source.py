@@ -11,6 +11,9 @@ from gunpowder.ext import dvision
 from gunpowder.points import PointsTypes, Points, PreSynPoint, PostSynPoint
 from gunpowder.profiling import Timing
 from gunpowder.provider_spec import ProviderSpec
+
+from gunpowder.points_spec import PointsSpec
+
 from gunpowder.roi import Roi
 from gunpowder.volume import Volume, VolumeTypes
 
@@ -25,7 +28,7 @@ class MaskNotProvidedException(Exception):
 
 class DvidSource(BatchProvider):
 
-    def __init__(self, hostname, port, uuid, volume_array_names,
+    def __init__(self, hostname, port, uuid, volume_array_names, volume_specs,
                  points_array_names={}, points_rois={}, points_voxel_size=None):
         """
         :param hostname: hostname for DVID server
@@ -43,6 +46,7 @@ class DvidSource(BatchProvider):
         self.uuid = uuid
 
         self.volume_array_names = volume_array_names
+        self.volume_specs       = volume_specs
 
         self.points_array_names = points_array_names
         self.points_rois        = points_rois
@@ -50,14 +54,21 @@ class DvidSource(BatchProvider):
 
         self.node_service = None
         self.dims = 0
-        self.spec = ProviderSpec()
+        # self.spec = ProviderSpec()
 
     def setup(self):
+
         for volume_type, volume_name in self.volume_array_names.items():
-            self.spec.volumes[volume_type] = self.__get_roi(volume_name, volume_type.voxel_size)
+            self.provides(volume_type, self.volume_specs[volume_type])
 
         for points_type, points_name in self.points_array_names.items():
-            self.spec.points[points_type] = self.points_rois[points_type]
+	        self.provides(points_type, PointsSpec(roi=self.points_rois[points_type]))
+
+        # for volume_type, volume_name in self.volume_array_names.items():
+        #     self.spec.volumes[volume_type] = self.__get_roi(volume_name, (8,8,8))  # volume_type.voxel_size)
+        #
+        # for points_type, points_name in self.points_array_names.items():
+        #     self.spec.points[points_type] = self.points_rois[points_type]
 
         logger.info("DvidSource.spec:\n{}".format(self.spec))
 
@@ -73,13 +84,14 @@ class DvidSource(BatchProvider):
 
         batch = Batch()
 
-        for (volume_type, roi) in request.volumes.items():
+        for (volume_type, vol_specs) in request.volume_specs.items():
+            roi = vol_specs.roi
             # check if requested volumetype can be provided
-            if volume_type not in spec.volumes:
+            if volume_type not in spec:
                 raise RuntimeError("Asked for %s which this source does not provide"%volume_type)
             # check if request roi lies within provided roi
-            if not spec.volumes[volume_type].contains(roi):
-                raise RuntimeError("%s's ROI %s outside of my ROI %s"%(volume_type, roi, spec.volumes[volume_type]))
+            if not spec[volume_type].roi.contains(roi):
+                raise RuntimeError("%s's ROI %s outside of my ROI %s"%(volume_type, roi, spec[volume_type].ro))
 
             read = {
                 VolumeTypes.RAW: self.__read_raw,
@@ -88,34 +100,33 @@ class DvidSource(BatchProvider):
             }[volume_type]
 
             logger.debug("Reading %s in %s..."%(volume_type, roi))
-            batch.volumes[volume_type] = Volume(
-                    read(roi),
-                    roi=roi)
+            batch.volumes[volume_type] = Volume(data=read(roi), spec=request[volume_type])
 
         # if pre and postsynaptic locations requested, their id : SynapseLocation dictionaries should be created
         # together s.t. the ids are unique and allow to find partner locations
-        if PointsTypes.PRESYN in request.points or PointsTypes.POSTSYN in request.points:
+        if PointsTypes.PRESYN in request.points_specs or PointsTypes.POSTSYN in request.points_specs:
             try:  # either both have the same roi, or only one of them is requested
-                assert request.points[PointsTypes.PRESYN] == request.points[PointsTypes.POSTSYN]
+                assert request.points_specs[PointsTypes.PRESYN].roi == request.points_specs[PointsTypes.POSTSYN].roi
             except:
-                assert PointsTypes.PRESYN not in request.points or PointsTypes.POSTSYN not in request.points
-            if PointsTypes.PRESYN in request.points:
-                presyn_points, postsyn_points = self.__read_syn_points(roi=request.points[PointsTypes.PRESYN])
-            elif PointsTypes.POSTSYN in request.points:
-                presyn_points, postsyn_points = self.__read_syn_points(roi=request.points[PointsTypes.POSTSYN])
+                assert PointsTypes.PRESYN not in request.points_specs or PointsTypes.POSTSYN not in request.points_specs
+            if PointsTypes.PRESYN in request.points_specs:
+                presyn_points, postsyn_points = self.__read_syn_points(roi=request.points_specs[PointsTypes.PRESYN].roi)
+            elif PointsTypes.POSTSYN in request.points_specs:
+                presyn_points, postsyn_points = self.__read_syn_points(roi=request.points_specs[PointsTypes.POSTSYN].roi)
 
-        for (points_type, roi) in request.points.items():
+        for (points_type, pts_spec) in request.points_specs.items():
+            roi = pts_spec.roi
             # check if requested pointstype can be provided
-            if points_type not in spec.points:
+            if points_type not in spec:
                 raise RuntimeError("Asked for %s which this source does not provide"%points_type)
             # check if request roi lies within provided roi
-            if not spec.points[points_type].contains(roi):
+            if not spec[points_type].roi.contains(roi):
                 raise RuntimeError("%s's ROI %s outside of my ROI %s"%(points_type,roi,spec.points[points_type]))
 
             logger.debug("Reading %s in %s..."%(points_type, roi))
             id_to_point = {PointsTypes.PRESYN: presyn_points,
                            PointsTypes.POSTSYN: postsyn_points}[points_type]
-            batch.points[points_type] = Points(data=id_to_point, roi=roi, resolution=self.points_voxel_size[points_type])
+            batch.points[points_type] = Points(data=id_to_point, spec=pts_spec)
 
         logger.debug("done")
 
@@ -137,7 +148,8 @@ class DvidSource(BatchProvider):
         return Roi(offset=roi_min*voxel_size, shape=(roi_max - roi_min)*voxel_size)
 
     def __read_raw(self, roi):
-        slices = (roi/VolumeTypes.RAW.voxel_size).get_bounding_box()
+        spec = self.get_spec()
+        slices = (roi/spec[VolumeTypes.RAW].voxel_size).get_bounding_box()
         data_instance = dvision.DVIDDataInstance(self.hostname, self.port, self.uuid, self.volume_array_names[VolumeTypes.RAW])  # self.raw_array_name)
         try:
             return data_instance[slices]
@@ -147,7 +159,8 @@ class DvidSource(BatchProvider):
             raise DvidSourceReadException(msg)
 
     def __read_gt(self, roi):
-        slices = (roi/VolumeTypes.GT_LABELS.voxel_size).get_bounding_box()
+        spec = self.get_spec()
+        slices = (roi/spec[VolumeTypes.GT_LABELS].voxel_size).get_bounding_box()
         data_instance = dvision.DVIDDataInstance(self.hostname, self.port, self.uuid, self.volume_array_names[VolumeTypes.GT_LABELS])  # self.gt_array_name)
         try:
             return data_instance[slices]
@@ -176,6 +189,7 @@ class DvidSource(BatchProvider):
         url = "http://" + str(self.hostname) + ":" + str(self.port)+"/api/node/" + str(self.uuid) + '/' + \
               str(array_name) + "/elements/{}_{}_{}/{}_{}_{}".format(volume_shape_voxel[2], volume_shape_voxel[1], volume_shape_voxel[0],
                                                    volume_offset_voxel[2], volume_offset_voxel[1], volume_offset_voxel[0])
+
         annotations_file = requests.get(url)
         json_annotations = annotations_file.json()
         if json_annotations is None:
