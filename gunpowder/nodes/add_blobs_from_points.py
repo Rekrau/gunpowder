@@ -1,4 +1,4 @@
-import logging
+# import logging
 import itertools
 import numpy as np
 
@@ -7,7 +7,7 @@ from .batch_filter import BatchFilter
 from gunpowder.points import *
 
 
-logger = logging.getLogger(__name__)
+# logger = logging.getLogger(__name__)
 
 class AddBlobsFromPoints(BatchFilter):
     '''Add a volume with blobs at locations given by a specified point type.
@@ -124,7 +124,6 @@ class AddBlobsFromPoints(BatchFilter):
             # Make sure both the necesary point types and volumes are present
             assert point_type in batch.points, "Upstream does not provide required point type\
             : %s"%point_type
-
             assert restrictive_mask_type in batch.volumes, "Upstream does not provide required \
             volume type: %s"%restrictive_mask_type
 
@@ -133,16 +132,22 @@ class AddBlobsFromPoints(BatchFilter):
 
             # if settings['output_volume_type'] == VolumeTypes.PRESYN_PRED_BLOB:
 
-            # If point doesn't have it's corresponding partner, delete it
-            if 'partner_points' in settings.keys() and settings['partner_points'] is not None:
-                partner_points = batch.points[settings['partner_points']]
-                synapse_ids = []
-                for point_id, point in points.data.items():
-                    if not point.partner_ids[0] in partner_points.data.keys():
-                        logger.warning('Point %s has no partner. Deleting...'%point_id)
-                        del points.data[point_id]
-                    else:
-                        synapse_ids.append(point.synapse_id)
+            # # If point doesn't have it's corresponding partner, delete it
+            # if 'partner_points' in settings.keys() and settings['partner_points'] is not None:
+            #     partner_points = batch.points[settings['partner_points']]
+            #     synapse_ids = []
+            #     for point_id, point in points.data.items():
+            #         if not point.partner_ids[0] in partner_points.data.keys():
+            #             logger.warning('Point %s has no partner. Deleting...'%point_id)
+            #             del points.data[point_id]
+            #         else:
+            #             synapse_ids.append(point.synapse_id)
+
+            # get synapse ids
+            synapse_ids = []
+            for point_id, point in points.data.items():
+                synapse_ids.append(point.synapse_id)
+
 
             all_synapse_ids[point_type] = synapse_ids
             all_points[point_type] = points
@@ -264,6 +269,6 @@ class BlobPlacer:
             return matrix, True
 
         else:
-            logger.warning('Location %s out of bounds'%(location))
+            # logger.warning('Location %s out of bounds'%(location))
 
             return matrix, False
