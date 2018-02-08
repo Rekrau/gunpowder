@@ -2,11 +2,16 @@ import logging
 import multiprocessing
 import numpy as np
 from gunpowder.batch import Batch
+from gunpowder.batch_request import BatchRequest
 from gunpowder.coordinate import Coordinate
 from gunpowder.producer_pool import ProducerPool
 from gunpowder.volume import Volume
+from gunpowder.volume_spec import VolumeSpec
 from gunpowder.points import Points
 from .batch_filter import BatchFilter
+
+import h5py
+import itertools
 
 logger = logging.getLogger(__name__)
 
@@ -19,6 +24,11 @@ class Scan(BatchFilter):
     upstream requests will be contained in the downstream requested ROI or
     upstream ROIs.
 
+    If mask_volume_type is not None, the Scan node will leave all batches empty where
+    the roi of the VolumeType "relevant_type" is not within the ON region of the provided
+    mask_volume_type. Batches with rois which are only partially in the ON region are
+    processed normally.
+
     Args:
 
         reference(:class:`BatchRequest`): A reference :class:`BatchRequest`.
@@ -30,9 +40,19 @@ class Scan(BatchFilter):
 
         cache_size (int, optional): If multiple workers are used, how many
             batches to hold at most.
+
+        relevant_type (:class:`VolumeTypes`): VolumeType which's roi
+            has to be at least partially covered by the mask for the batch to be considered.
+
+        mask_volume_type (:class:`mask_volume_type`): VolumeType of mask which
+            defines if the batch at shifted_reference is considered.
+
+        path_to_mask (str): path to file with mask
+            (in dvid format - resolution of block size 32).
     '''
 
-    def __init__(self, reference, num_workers=1, cache_size=50, aggregate=True):
+    def __init__(self, reference, num_workers=1, cache_size=50, aggregate=True,
+                 relevant_type=None, mask_volume_type=None, path_to_mask=None):
 
         self.reference = reference.copy()
         self.num_workers = num_workers
@@ -42,6 +62,10 @@ class Scan(BatchFilter):
         if num_workers > 1:
             self.request_queue = multiprocessing.Queue(maxsize=0)
         self.batch = None
+
+        self.mask_volume_type = mask_volume_type
+        self.relevant_type    = relevant_type
+        self.path_to_mask = path_to_mask
 
     def setup(self):
 
@@ -77,12 +101,21 @@ class Scan(BatchFilter):
         self.batch = Batch()
 
         if self.num_workers > 1:
-
+            counter = 0
             for shift in shifts:
                 shifted_reference = self.__shift_request(self.reference, shift)
-                self.request_queue.put(shifted_reference)
 
-            for i in range(num_chunks):
+                if self.mask_volume_type is not None:
+                    gt_mask_of_shifted_reference = self.__read_gt_mask(shifted_reference[self.relevant_type].roi)
+                    if not gt_mask_of_shifted_reference.mean() == 0:
+                        self.request_queue.put(shifted_reference)
+                        counter += 1
+                else:
+                    self.request_queue.put(shifted_reference)
+                    counter += 1
+
+
+            for i in range(counter):  # num_chunks):
 
                 chunk = self.workers.get()
 
@@ -96,12 +129,28 @@ class Scan(BatchFilter):
             for i, shift in enumerate(shifts):
 
                 shifted_reference = self.__shift_request(self.reference, shift)
-                chunk = self.__get_chunk(shifted_reference)
 
-                if not empty_request and self.aggregate:
-                    self.__add_to_batch(request, chunk)
+                if self.mask_volume_type is not None:
+                    gt_mask_of_shifted_reference = self.__read_gt_mask(shifted_reference[self.relevant_type].roi)
+                    if not gt_mask_of_shifted_reference.mean() == 0:
+                        chunk = self.__get_chunk(shifted_reference)
 
-                logger.info("processed chunk %d/%d", i, num_chunks)
+                        if not empty_request and self.aggregate:
+                            self.__add_to_batch(request, chunk)
+                        logger.info("processed chunk %d/%d", i, num_chunks)
+
+                else:
+                    chunk = self.__get_chunk(shifted_reference)
+
+                    if not empty_request and self.aggregate:
+                        self.__add_to_batch(request, chunk)
+
+                    logger.info("processed chunk %d/%d", i, num_chunks)
+
+        # setup empty batch if no valid batches found at all
+        if self.batch.get_total_roi() is None:
+            chunk = self.__get_chunk(shifted_reference)
+            self.batch = self.__setup_batch(request, chunk)
 
         batch = self.batch
         self.batch = None
@@ -323,3 +372,39 @@ class Scan(BatchFilter):
         for point_id, point in b.items():
             if roi_a.contains(Coordinate(point.location)):
                 a[point_id + max_point_id] = point
+
+    def __read_gt_mask(self, roi):
+
+        voxel_size = self.spec[self.mask_volume_type].voxel_size
+
+        block_size_vx = 32  # np.array([32, 32, 32], dtype='int')
+
+        offset_in_vx         = np.asarray(roi.get_offset()/voxel_size)
+        offset_in_blocks     = np.floor(offset_in_vx/block_size_vx).astype('int')
+        offset_within_blocks = offset_in_vx % block_size_vx
+
+        shape_in_vx            = np.asarray(roi.get_shape()/voxel_size)
+        shape_in_vx_incl_offset_within_blocks = (shape_in_vx+offset_within_blocks).astype('float')
+        shape_in_blocks        = np.ceil(np.array(shape_in_vx_incl_offset_within_blocks)/block_size_vx).astype('int')
+
+        h5_file           = h5py.File(self.path_to_mask, 'r')
+        gt_mask_in_blocks = h5_file['roi_binary_mask'][offset_in_blocks[0]:offset_in_blocks[0] + shape_in_blocks[0],
+                                                   offset_in_blocks[1]:offset_in_blocks[1] + shape_in_blocks[1],
+                                                   offset_in_blocks[2]:offset_in_blocks[2] + shape_in_blocks[2]]
+        h5_file.close()
+
+        if (np.unique(gt_mask_in_blocks) == 1).all():
+            gt_mask = np.ones(shape_in_vx)
+
+        else:
+            gt_mask_in_vx = np.zeros(np.array(gt_mask_in_blocks.shape)*block_size_vx)
+            for z, y, x in itertools.product(range(gt_mask_in_blocks.shape[0]), range(gt_mask_in_blocks.shape[1]), range(gt_mask_in_blocks.shape[2])):
+                gt_mask_in_vx[z*block_size_vx:(z+1)*block_size_vx,
+                              y*block_size_vx:(y+1)*block_size_vx,
+                              x*block_size_vx:(x+1)*block_size_vx] = gt_mask_in_blocks[z,y,x]
+
+            gt_mask = gt_mask_in_vx[offset_within_blocks[0]:offset_within_blocks[0]+shape_in_vx[0],
+                      offset_within_blocks[1]:offset_within_blocks[1]+shape_in_vx[1],
+                      offset_within_blocks[2]:offset_within_blocks[2]+shape_in_vx[2]]
+
+        return gt_mask
