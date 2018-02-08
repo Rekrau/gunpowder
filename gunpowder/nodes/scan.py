@@ -295,13 +295,15 @@ class Scan(BatchFilter):
             self.batch = self.__setup_batch(spec, chunk)
 
         for (volume_type, volume) in chunk.volumes.items():
-            self.__fill(self.batch.volumes[volume_type].data, volume.data,
-                        spec.volume_specs[volume_type].roi, volume.spec.roi,
-                        self.spec[volume_type].voxel_size)
+            if volume_type in spec.volume_specs.keys():
+                self.__fill(self.batch.volumes[volume_type].data, volume.data,
+                            spec.volume_specs[volume_type].roi, volume.spec.roi,
+                            self.spec[volume_type].voxel_size)
 
         for (points_type, points) in chunk.points.items():
-            self.__fill_points(self.batch.points[points_type].data, points.data,
-                               spec.points_specs[points_type].roi, points.roi)
+            if points_type in spec.points_specs.keys():
+                self.__fill_points(self.batch.points[points_type].data, points.data,
+                                   spec.points_specs[points_type].roi, points.roi)
 
     def __setup_batch(self, batch_spec, chunk):
         '''Allocate a batch matching the sizes of ``batch_spec``, using
