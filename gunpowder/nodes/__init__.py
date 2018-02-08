@@ -11,6 +11,7 @@ from .crop import Crop
 from .defect_augment import DefectAugment
 from .downsample import DownSample
 from .dvid_source import DvidSource
+from .data_source_customized_fib25 import DataSourceCustomized_Fib25, DataInfo
 from .elastic_augment import ElasticAugment
 from .exclude_labels import ExcludeLabels
 from .grow_boundary import GrowBoundary
