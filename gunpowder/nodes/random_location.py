@@ -3,11 +3,13 @@ import logging
 from random import randint
 
 import numpy as np
+import json
 from skimage.transform import integral_image, integrate
 from gunpowder.batch_request import BatchRequest
 from gunpowder.coordinate import Coordinate
 from gunpowder.roi import Roi
 from gunpowder.volume import VolumeTypes
+from gunpowder.volume_spec import VolumeSpec
 from gunpowder.points_spec import PointsSpec
 from .batch_filter import BatchFilter
 
@@ -44,13 +46,21 @@ class RandomLocation(BatchFilter):
             PointsTypes is contained in batch
     '''
 
-    def __init__(self, min_masked=0, mask_volume_type=VolumeTypes.GT_MASK, focus_points_type=None):
+    def __init__(self, min_masked=0, mask_volume_type=VolumeTypes.GT_MASK, focus_points_type=None,
+                 path_to_dvid_rois=None):
 
         self.min_masked = min_masked
         self.mask_volume_type = mask_volume_type
         self.mask_spec = None
         self.focus_points_type = focus_points_type
+        self.path_to_dvid_rois = path_to_dvid_rois
 
+        if self.path_to_dvid_rois is not None:
+            self.block_size_vx = 32.
+            with open(self.path_to_dvid_rois, 'r') as f:
+                json_file = json.load(f)
+                self.dvid_rois = json_file['rois']  # list of [[z,y, x_start, x_end], ...]
+                self.dvid_rois_probs = json_file['probs'] # prob dep on (x_end - x_start+1)
 
     def setup(self):
 
@@ -109,14 +119,41 @@ class RandomLocation(BatchFilter):
         else:
             lcm_shift_roi = shift_roi
 
+
+        block_size_nm = self.block_size_vx * np.array(lcm_voxel_size)
         good_location_found_for_mask, good_location_found_for_points = False, False
         while not good_location_found_for_mask or not good_location_found_for_points:
-            # select a random point inside ROI
-            random_shift = Coordinate(
-                    randint(int(begin), int(end-1))
-                    for begin, end in zip(lcm_shift_roi.get_begin(), lcm_shift_roi.get_end()))
-            if lcm_voxel_size is not None:
-                random_shift *= lcm_voxel_size
+
+            if self.path_to_dvid_rois is not None:
+                # select a random block of the officially correct rois, with probability prop to the roi's size
+                valid_roi_found = False
+                while not valid_roi_found:
+                    chosen_block        = self.dvid_rois[int(np.random.choice(a=range(len(self.dvid_rois)), size=1,
+                                                                              p=self.dvid_rois_probs))]
+                    chosen_block_as_roi = Roi(offset=(chosen_block[0]*block_size_nm[0], chosen_block[1]*block_size_nm[1],
+                                                      chosen_block[2]*block_size_nm[2]),
+                                              shape=(block_size_nm[0], block_size_nm[1],
+                                                      (chosen_block[3]-chosen_block[2]+1)*block_size_nm[2]))
+
+                    #TOOO: Does not work if not focus_points_given...
+                    # assert self.focus_points_type is not None, 'Script does not work properly if no points to focus on provided'
+                    roi_focused_points = self.upstream_spec[self.focus_points_type].roi
+                    if roi_focused_points.grow(Coordinate((0,0,0)), -request[self.focus_points_type].roi.get_shape()).contains(chosen_block_as_roi):
+                        valid_roi_found = True
+
+                random_shift = Coordinate(
+                        randint(int(begin), int(end-1))
+                        for begin, end in zip(chosen_block_as_roi.get_begin(), chosen_block_as_roi.get_end())) -\
+                               request[self.focus_points_type].roi.get_offset()
+
+            else:
+                # select a random point inside ROI
+                random_shift = Coordinate(
+                        randint(int(begin), int(end-1))
+                        for begin, end in zip(lcm_shift_roi.get_begin(), lcm_shift_roi.get_end()))
+                if lcm_voxel_size is not None:
+                    random_shift *= lcm_voxel_size
+
             initial_random_shift = copy.deepcopy(random_shift)
             logger.debug("random shift: " + str(random_shift))
 
