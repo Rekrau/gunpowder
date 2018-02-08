@@ -85,7 +85,8 @@ class Train(GenericTrain):
             volume_specs=None,
             save_every=2000,
             checkpoint_dir='',
-            checkpoint_file=None):
+            checkpoint_file=None,
+            print_loss_every=None):
 
         super(Train, self).__init__(
             inputs,
@@ -109,6 +110,8 @@ class Train(GenericTrain):
         self.checkpoint_dir = checkpoint_dir
         self.checkpoint_file = checkpoint_file
 
+        self.print_loss_every = print_loss_every
+
         if isinstance(optimizer, basestring):
             self.optimizer_loss_names = (optimizer, loss)
         else:
@@ -129,6 +132,7 @@ class Train(GenericTrain):
             # get actual operations/tensors from names
             self.optimizer = self.graph.get_operation_by_name(self.optimizer_loss_names[0])
             self.loss = self.graph.get_tensor_by_name(self.optimizer_loss_names[1])
+
 
         # add symbolic gradients
         for tensor_name in self.gradients:
@@ -160,6 +164,10 @@ class Train(GenericTrain):
 
         batch.loss = outputs['loss']
         batch.iteration = outputs['iteration'][0]
+
+        if self.print_loss_every is not None:
+            if batch.iteration%self.print_loss_every == 0:
+                print 'Loss at iteration %i:'%(int(batch.iteration)), float(batch.loss)
 
         if batch.iteration%self.save_every == 0:
 
