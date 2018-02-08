@@ -33,19 +33,12 @@ class BalanceLabels(BatchFilter):
             will perform the balancing for every each slice `(0:2,:)`,
             `(2:4,:)`, ... individually.
 
-        min_frac (:class:``float``, optional): A minimum required fraction for
-            both pos and neg classes in each slab. If one of the classes in a slab
-            is less than or equal to this fraction, the slab will be ignored (scale=0)
-            Use frac 0 to make sure there is at least one positive example.
-            Use frac < 0 to never ignore a slab.
-
     '''
 
-    def __init__(self, labels, scales, mask=None, slab=None, min_frac=0):
+    def __init__(self, labels, scales, mask=None, slab=None):
 
         self.labels = labels
         self.scales = scales
-        self.min_frac = min_frac
 
         if mask is None:
             self.masks = []
@@ -126,26 +119,20 @@ class BalanceLabels(BatchFilter):
                 for d in range(len(slab)))
             self.__balance(
                 labels.data[slices],
-                error_scale[slices],
-                self.min_frac)
+                error_scale[slices]
+                )
 
         spec = self.spec[self.scales].copy()
         spec.roi = labels.spec.roi
         batch.volumes[self.scales] = Volume(error_scale, spec)
 
-    def __balance(self, labels, scale, min_frac):
+    def __balance(self, labels, scale):
 
         # in the masked-in area, compute the fraction of positive samples
         masked_in = scale.sum()
         num_pos  = (labels*scale).sum()
         frac_pos = float(num_pos) / masked_in if masked_in > 0 else 0
-        # frac_neg = 1.0 - frac_pos
 
-        # if frac_pos <= min_frac or frac_neg <= min_frac:
-        #     # If not enough pos or neg examples, ignore slab
-        #     scale *= 0
-
-        # else:
         frac_pos = np.clip(frac_pos, 0.05, 0.95)
         frac_neg = 1.0 - frac_pos
 
@@ -155,8 +142,3 @@ class BalanceLabels(BatchFilter):
 
         # scale the masked-in scale with the class weights
         scale *= (labels >= 0.5) * w_pos + (labels < 0.5) * w_neg
-
-
-
-
-
