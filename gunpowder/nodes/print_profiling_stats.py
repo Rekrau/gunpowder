@@ -19,9 +19,10 @@ class PrintProfilingStats(BatchFilter):
             min, max, mean, and median runtimes.
     '''
 
-    def __init__(self, every=1):
+    def __init__(self, every=1, print_stats=False):
 
         self.every = every
+        self.print_stats = print_stats
         self.n = 0
         self.accumulated_stats = ProfilingStats()
         self.__upstream_timing = Timing(self)
@@ -99,6 +100,9 @@ class PrintProfilingStats(BatchFilter):
                 stats += "\n"
 
         stats += "\n"
+
+        if self.print_stats:
+            print stats
 
         logger.info(stats)
 
