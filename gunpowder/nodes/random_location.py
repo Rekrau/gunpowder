@@ -60,31 +60,7 @@ class RandomLocation(BatchFilter):
         if self.upstream_roi is None:
             raise RuntimeError("Can not draw random samples from a provider that does not have a bounding box.")
 
-        if self.min_masked > 0:
-
-            assert self.mask_volume_type in self.upstream_spec, "Upstream provider does not have %s"%self.mask_volume_type
-            self.mask_spec = self.upstream_spec.volume_specs[self.mask_volume_type]
-
-            logger.info("requesting complete mask...")
-
-            mask_request = BatchRequest({self.mask_volume_type: self.mask_spec})
-            mask_batch = self.get_upstream_provider().request_batch(mask_request)
-
-            logger.info("allocating mask integral volume...")
-
-            mask_data = mask_batch.volumes[self.mask_volume_type].data
-            mask_integral_dtype = np.uint64
-            logger.debug("mask size is " + str(mask_data.size))
-            if mask_data.size < 2**32:
-                mask_integral_dtype = np.uint32
-            if mask_data.size < 2**16:
-                mask_integral_dtype = np.uint16
-            logger.debug("chose %s as integral volume dtype"%mask_integral_dtype)
-
-            self.mask_integral = np.array(mask_data>0, dtype=mask_integral_dtype)
-            self.mask_integral = integral_image(self.mask_integral)
-
-        # clear bounding boxes of all provided volumes and points -- 
+        # clear bounding boxes of all provided volumes and points --
         # RandomLocation does not have limits (offsets are ignored)
         for identifier, spec in self.spec.items():
             spec.roi = None
@@ -147,7 +123,7 @@ class RandomLocation(BatchFilter):
             good_location_found_for_mask, good_location_found_for_points = False, False
             if self.focus_points_type is not None:
 
-                focused_points_roi = request[self.focus_points_type].roi
+                focused_points_roi    = request[self.focus_points_type].roi
                 focused_points_offset = focused_points_roi.get_offset()
                 focused_points_shape  = focused_points_roi.get_shape()
 
@@ -190,23 +166,16 @@ class RandomLocation(BatchFilter):
                 good_location_found_for_points = True
 
             if self.min_masked > 0:
-                # get randomly chosen mask ROI
-                request_mask_roi = request.volume_specs[self.mask_volume_type].roi
-                request_mask_roi = request_mask_roi.shift(random_shift)
 
-                # get coordinates inside mask volume
                 mask_voxel_size = self.spec[self.mask_volume_type].voxel_size
-                request_mask_roi_in_volume = request_mask_roi/mask_voxel_size
-                request_mask_roi_in_volume -= self.mask_spec.roi.get_offset()/mask_voxel_size
 
-                # get number of masked-in voxels
-                num_masked_in = integrate(
-                    self.mask_integral,
-                    [request_mask_roi_in_volume.get_begin()],
-                    [request_mask_roi_in_volume.get_end()-(1,)*self.mask_integral.ndim]
-                )[0]
+                # prefetch gt mask in roi of focus_points_type
+                request_for_gt_mask = BatchRequest()
+                request_for_gt_mask[self.mask_volume_type] = VolumeSpec(roi=focused_points_roi.shift(random_shift),\
+                                                             voxel_size=mask_voxel_size, interpolatable=False, dtype=None)
 
-                mask_ratio = float(num_masked_in)/request_mask_roi_in_volume.size()
+                batch_of_gt_mask = self.get_upstream_provider().request_batch(request_for_gt_mask)
+                mask_ratio = batch_of_gt_mask.volumes[self.mask_volume_type].data.mean()
                 logger.debug("mask ratio is %f", mask_ratio)
 
                 if mask_ratio >= self.min_masked:
