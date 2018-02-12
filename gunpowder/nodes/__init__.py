@@ -20,6 +20,7 @@ from .hdf5_write import Hdf5Write
 from .intensity_augment import IntensityAugment
 from .intensity_scale_shift import IntensityScaleShift
 from .merge_provider import MergeProvider
+from .multiply_predaffs_with_mask import MultiplyPredAffsWithMask
 from .normalize import Normalize
 from .pad import Pad
 from .precache import PreCache
