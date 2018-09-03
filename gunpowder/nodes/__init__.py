@@ -10,7 +10,7 @@ from .batch_provider import BatchProvider
 from .crop import Crop
 from .defect_augment import DefectAugment
 from .downsample import DownSample
-from .dvid_source import DvidSource
+# from .dvid_source import DvidSource
 from .elastic_augment import ElasticAugment
 from .exclude_labels import ExcludeLabels
 from .grow_boundary import GrowBoundary
